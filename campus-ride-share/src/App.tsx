@@ -9,7 +9,7 @@ import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { SocketProvider } from "./contexts/SocketContext";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
-import Dashboard from "./pages/Dashboard";
+import Dashboard from "./pages/Dashboard.tsx";
 import RideRequest from "./pages/RideRequest";
 import RideDetails from "./pages/RideDetails";
 import Profile from "./pages/Profile";

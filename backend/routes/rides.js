@@ -1,6 +1,6 @@
 import express from "express";
 import { z } from "zod";
-import { db } from "../server.js";
+import { db, cleanupExpiredRides } from "../server.js";
 import { authenticateToken } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -16,9 +16,34 @@ const createRideSchema = z.object({
   notes: z.string().max(500).optional(),
 });
 
+// Utility function to check if a ride is expired
+function isRideExpired(rideDate, endTime) {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
+  const istTime = new Date(now.getTime() + istOffset);
+
+  const currentDate = istTime.toISOString().split("T")[0]; // YYYY-MM-DD format
+  const currentTime = istTime.toTimeString().split(" ")[0].substring(0, 5); // HH:MM format
+
+  // Check if ride date is in the past
+  if (rideDate < currentDate) {
+    return true;
+  }
+
+  // If same date, check if end time has passed
+  if (rideDate === currentDate && endTime < currentTime) {
+    return true;
+  }
+
+  return false;
+}
+
 // Get all rides with filters
 router.get("/", authenticateToken, async (req, res) => {
   try {
+    // Run cleanup before fetching rides to ensure expired rides are removed
+    await cleanupExpiredRides();
+
     const { destination, date, status = "active" } = req.query;
 
     let query = `
@@ -29,10 +54,17 @@ router.get("/", authenticateToken, async (req, res) => {
         (SELECT COUNT(*) FROM ride_participants WHERE ride_id = r.id) as participant_count
       FROM rides r
       JOIN users u ON r.creator_id = u.id
-      WHERE r.status = ?
     `;
 
-    const params = [status];
+    const params = [];
+
+    // Handle status filtering
+    if (status === "all") {
+      query += " WHERE (r.status = 'active' OR r.status = 'completed')";
+    } else {
+      query += " WHERE r.status = ?";
+      params.push(status);
+    }
 
     if (destination) {
       query += " AND r.destination LIKE ?";
@@ -48,8 +80,18 @@ router.get("/", authenticateToken, async (req, res) => {
 
     const [rides] = await db.execute(query, params);
 
+    // Filter out any expired rides that might have slipped through cleanup
+    // Only apply expired filtering to active rides
+    let filteredRides;
+    if (status === "active") {
+      filteredRides = rides.filter(ride => !isRideExpired(ride.date, ride.time_window_end));
+    } else {
+      // For completed rides or "all" status, don't filter by expiration
+      filteredRides = rides;
+    }
+
     // Get participants for each ride
-    for (let ride of rides) {
+    for (let ride of filteredRides) {
       const [participants] = await db.execute(
         `
         SELECT u.id, u.name, u.email, rp.joined_at
@@ -64,7 +106,7 @@ router.get("/", authenticateToken, async (req, res) => {
       ride.participants = participants;
     }
 
-    res.json({ rides });
+    res.json({ rides: filteredRides });
   } catch (error) {
     console.error("Get rides error:", error);
     res.status(500).json({ message: "Internal server error" });
@@ -418,8 +460,7 @@ router.get("/:id/debug", authenticateToken, async (req, res) => {
     const [participants] = await db.execute(
       `SELECT 
         rp.*,
-        u.name as participant_name,
-        u.email as participant_email
+        u.name, u.email 
       FROM ride_participants rp
       JOIN users u ON rp.user_id = u.id
       WHERE rp.ride_id = ?`,
@@ -436,6 +477,142 @@ router.get("/:id/debug", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Debug ride error:", error);
     res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Delete ride with ownership transfer
+router.delete("/:id", authenticateToken, async (req, res) => {
+  const { id: rideId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    // Start transaction
+    await db.execute("START TRANSACTION");
+
+    // Get ride details and check ownership
+    const [rides] = await db.execute(
+      "SELECT * FROM rides WHERE id = ? AND creator_id = ?",
+      [rideId, userId]
+    );
+
+    if (rides.length === 0) {
+      await db.execute("ROLLBACK");
+      return res.status(404).json({ message: "Ride not found or you don't have permission to delete it" });
+    }
+
+    const ride = rides[0];
+
+    // Get participants (excluding creator)
+    const [participants] = await db.execute(
+      `SELECT rp.*, u.name, u.email 
+       FROM ride_participants rp
+       JOIN users u ON rp.user_id = u.id
+       WHERE rp.ride_id = ? 
+       ORDER BY rp.joined_at ASC`,
+      [rideId]
+    );
+
+    if (participants.length > 0) {
+      // Transfer ownership to the first participant who joined
+      const newOwner = participants[0];
+      
+      await db.execute(
+        "UPDATE rides SET creator_id = ? WHERE id = ?",
+        [newOwner.user_id, rideId]
+      );
+
+      // Remove the new owner from participants table
+      await db.execute(
+        "DELETE FROM ride_participants WHERE ride_id = ? AND user_id = ?",
+        [rideId, newOwner.user_id]
+      );
+
+      // Send notification to new owner (you can implement this)
+      console.log(`Ride ownership transferred to ${newOwner.name} for ride ${rideId}`);
+
+      await db.execute("COMMIT");
+      res.json({ 
+        message: `Ride ownership transferred to ${newOwner.name}`,
+        newOwner: newOwner.name
+      });
+    } else {
+      // No participants, safe to delete the ride
+      await db.execute("DELETE FROM ride_messages WHERE ride_id = ?", [rideId]);
+      await db.execute("DELETE FROM rides WHERE id = ?", [rideId]);
+
+      await db.execute("COMMIT");
+      res.json({ message: "Ride deleted successfully" });
+    }
+
+  } catch (error) {
+    await db.execute("ROLLBACK");
+    console.error("Delete ride error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Manual cleanup endpoint (admin only)
+router.post("/cleanup", authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin (you can implement admin check based on your user model)
+    const [user] = await db.execute("SELECT role FROM users WHERE id = ?", [req.user.id]);
+    
+    if (user.length === 0 || user[0].role !== 'admin') {
+      return res.status(403).json({ message: "Admin access required" });
+    }
+
+    console.log(`Manual cleanup triggered by admin user ${req.user.id}`);
+    await cleanupExpiredRides();
+    
+    res.json({ message: "Cleanup completed successfully" });
+  } catch (error) {
+    console.error("Manual cleanup error:", error);
+    res.status(500).json({ message: "Cleanup failed" });
+  }
+});
+
+// Get cleanup status and statistics
+router.get("/admin/cleanup-status", authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    const [user] = await db.execute("SELECT role FROM users WHERE id = ?", [req.user.id]);
+    
+    if (user.length === 0 || user[0].role !== 'admin') {
+      return res.status(403).json({ message: "Admin access required" });
+    }
+
+    // Get current time in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(now.getTime() + istOffset);
+    const currentDate = istTime.toISOString().split("T")[0];
+    const currentTime = istTime.toTimeString().split(" ")[0].substring(0, 5);
+
+    // Count total rides
+    const [totalRides] = await db.execute("SELECT COUNT(*) as count FROM rides");
+    
+    // Count active rides
+    const [activeRides] = await db.execute("SELECT COUNT(*) as count FROM rides WHERE status = 'active'");
+    
+    // Count expired rides that need cleanup
+    const [expiredRides] = await db.execute(
+      `SELECT COUNT(*) as count FROM rides 
+       WHERE status = 'active' 
+       AND (date < ? OR (date = ? AND time_window_end < ?))`,
+      [currentDate, currentDate, currentTime]
+    );
+
+    res.json({
+      currentTime: istTime.toISOString(),
+      totalRides: totalRides[0].count,
+      activeRides: activeRides[0].count,
+      expiredRidesNeedingCleanup: expiredRides[0].count,
+      cleanupInterval: "5 minutes",
+      timezone: "IST (UTC+5:30)"
+    });
+  } catch (error) {
+    console.error("Cleanup status error:", error);
+    res.status(500).json({ message: "Failed to get cleanup status" });
   }
 });
 

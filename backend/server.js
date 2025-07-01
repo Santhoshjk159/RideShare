@@ -127,6 +127,82 @@ app.use("*", (req, res) => {
   res.status(404).json({ message: "Route not found" });
 });
 
+// Function to clean up expired rides
+async function cleanupExpiredRides() {
+  try {
+    // Get current time in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
+    const istTime = new Date(now.getTime() + istOffset);
+
+    const currentDate = istTime.toISOString().split("T")[0]; // YYYY-MM-DD format
+    const currentTime = istTime.toTimeString().split(" ")[0].substring(0, 5); // HH:MM format
+
+    console.log(`[${istTime.toISOString()}] Running cleanup for expired rides...`);
+    console.log(`Current IST Date: ${currentDate}, Time: ${currentTime}`);
+
+    // Find expired rides (where end time has passed)
+    const [expiredRides] = await db.execute(
+      `
+      SELECT id, destination, date, time_window_end, creator_id
+      FROM rides 
+      WHERE status = 'active' 
+      AND (
+        date < ? 
+        OR (date = ? AND time_window_end < ?)
+      )
+    `,
+      [currentDate, currentDate, currentTime]
+    );
+
+    if (expiredRides.length > 0) {
+      console.log(`Found ${expiredRides.length} expired rides to clean up:`, expiredRides);
+
+      for (const ride of expiredRides) {
+        // Start transaction for each ride
+        await db.execute("START TRANSACTION");
+
+        try {
+          // Check if ride has participants
+          const [participants] = await db.execute(
+            `SELECT rp.*, u.name, u.email 
+             FROM ride_participants rp
+             JOIN users u ON rp.user_id = u.id
+             WHERE rp.ride_id = ? 
+             ORDER BY rp.joined_at ASC`,
+            [ride.id]
+          );
+
+          if (participants.length > 0) {
+            // If there are participants, mark the ride as completed
+            // This preserves the ride for history but removes it from active rides
+            await db.execute(
+              "UPDATE rides SET status = 'completed' WHERE id = ?",
+              [ride.id]
+            );
+
+            console.log(`Ride ${ride.id} marked as completed (${participants.length} participants)`);
+          } else {
+            // No participants, safe to delete the ride completely
+            await db.execute("DELETE FROM ride_messages WHERE ride_id = ?", [ride.id]);
+            await db.execute("DELETE FROM rides WHERE id = ?", [ride.id]);
+            console.log(`Ride ${ride.id} deleted (no participants)`);
+          }
+
+          await db.execute("COMMIT");
+        } catch (error) {
+          await db.execute("ROLLBACK");
+          console.error(`Error processing expired ride ${ride.id}:`, error);
+        }
+      }
+    } else {
+      console.log("No expired rides found");
+    }
+  } catch (error) {
+    console.error("Error during cleanup:", error);
+  }
+}
+
 // Start server
 server.listen(PORT, async () => {
   await testConnection();
@@ -134,6 +210,18 @@ server.listen(PORT, async () => {
   console.log(
     `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:5173"}`
   );
+  
+  // Run initial cleanup
+  console.log("🧹 Running initial ride cleanup...");
+  await cleanupExpiredRides();
+  
+  // Schedule cleanup to run every 5 minutes for more responsive cleanup
+  setInterval(async () => {
+    console.log("🧹 Running scheduled ride cleanup...");
+    await cleanupExpiredRides();
+  }, 5 * 60 * 1000); // 5 minutes in milliseconds
+  
+  console.log("⏰ Automatic ride cleanup scheduled every 5 minutes (IST)");
 });
 
-export { io };
+export { io, cleanupExpiredRides };

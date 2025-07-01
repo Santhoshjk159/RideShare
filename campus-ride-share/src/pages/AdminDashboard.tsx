@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Users, Car, MapPin, TrendingUp, Calendar, Shield } from "lucide-react";
+import { Users, Car, MapPin, TrendingUp, Calendar, Shield, Activity, AlertTriangle, CheckCircle, Clock } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -12,6 +12,8 @@ import {
   PieChart,
   Pie,
   Cell,
+  LineChart,
+  Line,
 } from "recharts";
 import toast from "react-hot-toast";
 

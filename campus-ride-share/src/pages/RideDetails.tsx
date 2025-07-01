@@ -11,6 +11,11 @@ import {
   ArrowLeft,
   Calendar,
   FileText,
+  Phone,
+  Mail,
+  Star,
+  Shield,
+  Car,
 } from "lucide-react";
 import { useSocket } from "../contexts/SocketContext";
 import { useAuth } from "../contexts/AuthContext";
