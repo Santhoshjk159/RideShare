@@ -20,12 +20,14 @@ const loginSchema = z.object({
 });
 
 // Helper functions
-const generateTokens = (userId) => {
-  const accessToken = jwt.sign({ userId }, process.env.JWT_ACCESS_SECRET, {
+const generateTokens = (userId, userInfo = {}) => {
+  const payload = { userId, ...userInfo };
+
+  const accessToken = jwt.sign(payload, process.env.JWT_ACCESS_SECRET, {
     expiresIn: process.env.JWT_ACCESS_EXPIRE,
   });
 
-  const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET, {
+  const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
     expiresIn: process.env.JWT_REFRESH_EXPIRE,
   });
 
@@ -54,13 +56,17 @@ router.post("/register", async (req, res) => {
     // Create user
     const [result] = await db.execute(
       "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
-      [name, email, hashedPassword, "student"]
+      [name, email, hashedPassword, "user"]
     );
 
     const userId = result.insertId;
 
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(userId);
+    const { accessToken, refreshToken } = generateTokens(userId, {
+      email,
+      name,
+      role: "user",
+    });
 
     // Store refresh token in database
     await db.execute("UPDATE users SET refresh_token = ? WHERE id = ?", [
@@ -135,7 +141,11 @@ router.post("/login", async (req, res) => {
     console.log("✅ Password verified for:", email);
 
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user.id);
+    const { accessToken, refreshToken } = generateTokens(user.id, {
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    });
     console.log("✅ Tokens generated for user:", user.id);
 
     // Store refresh token in database

@@ -21,7 +21,7 @@ export default {
         sans: ["Inter", "ui-sans-serif", "system-ui"],
       },
       animation: {
-        'spin-slow': 'spin 20s linear infinite',
+        "spin-slow": "spin 20s linear infinite",
       },
     },
   },

@@ -12,6 +12,7 @@ import mysql from "mysql2/promise";
 import authRoutes from "./routes/auth.js";
 import rideRoutes from "./routes/rides.js";
 import userRoutes from "./routes/users.js";
+import adminRoutes from "./routes/admin.js";
 
 // Import socket handlers
 import { handleSocketConnection } from "./utils/socketHandlers.js";
@@ -29,6 +30,7 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 5000;
+const isDevelopment = process.env.NODE_ENV !== "production";
 
 // Database connection
 const dbConfig = {
@@ -50,7 +52,7 @@ export const db = mysql.createPool(dbConfig);
 async function testConnection() {
   try {
     const connection = await db.getConnection();
-    console.log("✅ Database connected successfully");
+    // Database connected successfully
     connection.release();
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
@@ -71,42 +73,77 @@ app.use(
   })
 );
 
-// Rate limiting - reasonable limits for development
-const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute window
-  max: 50, // limit each IP to 50 requests per minute
-  message: {
-    error: "Too many requests from this IP, please try again later.",
-    retryAfter: 60,
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Skip rate limiting for health checks
-  skip: (req) => req.path === "/health",
-});
+// Development-friendly rate limiting
+if (isDevelopment) {
+  // Development mode: Rate limiting disabled
+  // Very lenient rate limiting for development
+  const devLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 10000, // Very high limit for development
+    message: {
+      error: "Rate limit reached (dev mode)",
+      retryAfter: 60,
+    },
+    skip: () => true, // Skip all rate limiting in development
+  });
+  app.use(devLimiter);
+} else {
+  // Production rate limiting
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // 100 requests per 15 minutes
+    message: {
+      error: "Too many requests from this IP, please try again later.",
+      retryAfter: 900,
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 
-app.use(limiter);
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // 5 login attempts per 15 minutes
+    message: {
+      error: "Too many login attempts, please try again later.",
+      retryAfter: 900,
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+  });
+
+  app.use(limiter);
+  app.use("/api/auth", authLimiter);
+}
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Request logging for development
-if (process.env.NODE_ENV === "development") {
+// Request logging for debugging
+if (isDevelopment) {
   app.use((req, res, next) => {
-    console.log(`📨 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+    // Log requests in development only
     next();
   });
 }
 
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    mode: isDevelopment ? "development" : "production",
+  });
 });
 
 // API Routes
+// Registering API routes...
 app.use("/api/auth", authRoutes);
 app.use("/api/rides", rideRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/admin", adminRoutes);
+// API routes registered
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
@@ -118,12 +155,15 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({
     message: "Something went wrong!",
-    error: process.env.NODE_ENV === "production" ? {} : err.message,
+    error: isDevelopment ? err.message : {},
   });
 });
 
 // 404 handler
 app.use("*", (req, res) => {
+  if (isDevelopment) {
+    console.log(`❌ 404 - Route not found: ${req.method} ${req.originalUrl}`);
+  }
   res.status(404).json({ message: "Route not found" });
 });
 
@@ -137,9 +177,6 @@ async function cleanupExpiredRides() {
 
     const currentDate = istTime.toISOString().split("T")[0]; // YYYY-MM-DD format
     const currentTime = istTime.toTimeString().split(" ")[0].substring(0, 5); // HH:MM format
-
-    console.log(`[${istTime.toISOString()}] Running cleanup for expired rides...`);
-    console.log(`Current IST Date: ${currentDate}, Time: ${currentTime}`);
 
     // Find expired rides (where end time has passed)
     const [expiredRides] = await db.execute(
@@ -156,7 +193,7 @@ async function cleanupExpiredRides() {
     );
 
     if (expiredRides.length > 0) {
-      console.log(`Found ${expiredRides.length} expired rides to clean up:`, expiredRides);
+      // Process expired rides
 
       for (const ride of expiredRides) {
         // Start transaction for each ride
@@ -175,31 +212,31 @@ async function cleanupExpiredRides() {
 
           if (participants.length > 0) {
             // If there are participants, mark the ride as completed
-            // This preserves the ride for history but removes it from active rides
             await db.execute(
               "UPDATE rides SET status = 'completed' WHERE id = ?",
               [ride.id]
             );
-
-            console.log(`Ride ${ride.id} marked as completed (${participants.length} participants)`);
           } else {
             // No participants, safe to delete the ride completely
-            await db.execute("DELETE FROM ride_messages WHERE ride_id = ?", [ride.id]);
+            await db.execute("DELETE FROM ride_messages WHERE ride_id = ?", [
+              ride.id,
+            ]);
             await db.execute("DELETE FROM rides WHERE id = ?", [ride.id]);
-            console.log(`Ride ${ride.id} deleted (no participants)`);
           }
 
           await db.execute("COMMIT");
         } catch (error) {
           await db.execute("ROLLBACK");
-          console.error(`Error processing expired ride ${ride.id}:`, error);
+          if (isDevelopment) {
+            console.error(`Error processing expired ride ${ride.id}:`, error);
+          }
         }
       }
-    } else {
-      console.log("No expired rides found");
     }
   } catch (error) {
-    console.error("Error during cleanup:", error);
+    if (isDevelopment) {
+      console.error("Error during cleanup:", error);
+    }
   }
 }
 
@@ -207,21 +244,22 @@ async function cleanupExpiredRides() {
 server.listen(PORT, async () => {
   await testConnection();
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(
-    `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:5173"}`
-  );
-  
+  if (isDevelopment) {
+    console.log(
+      `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:5173"}`
+    );
+    console.log(
+      `🔧 Environment: ${isDevelopment ? "Development" : "Production"}`
+    );
+  }
+
   // Run initial cleanup
-  console.log("🧹 Running initial ride cleanup...");
   await cleanupExpiredRides();
-  
-  // Schedule cleanup to run every 5 minutes for more responsive cleanup
+
+  // Schedule cleanup to run every 5 minutes
   setInterval(async () => {
-    console.log("🧹 Running scheduled ride cleanup...");
     await cleanupExpiredRides();
-  }, 5 * 60 * 1000); // 5 minutes in milliseconds
-  
-  console.log("⏰ Automatic ride cleanup scheduled every 5 minutes (IST)");
+  }, 5 * 60 * 1000); // 5 minutes
 });
 
 export { io, cleanupExpiredRides };

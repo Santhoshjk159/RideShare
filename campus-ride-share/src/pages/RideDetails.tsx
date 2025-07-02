@@ -34,6 +34,10 @@ interface Ride {
   creator_name: string;
   creator_id: number;
   notes: string;
+  status: string;
+  completed_by?: number;
+  completed_by_name?: string;
+  completed_at?: string;
   participants: Array<{
     id: number;
     name: string;
@@ -154,6 +158,26 @@ function RideDetails() {
     }
   };
 
+  const handleCompleteRide = async () => {
+    if (!ride || !user) return;
+
+    const confirmComplete = window.confirm(
+      "Are you sure you want to mark this ride as completed? This action cannot be undone."
+    );
+
+    if (confirmComplete) {
+      try {
+        await axios.post(`/rides/${ride.id}/complete`);
+        toast.success("Ride marked as completed!");
+        fetchRide(); // Refresh ride data
+      } catch (error: any) {
+        const message =
+          error.response?.data?.message || "Failed to complete ride";
+        toast.error(message);
+      }
+    }
+  };
+
   if (loading) return <LoadingSpinner />;
   if (!ride) return <div>Ride not found</div>;
 
@@ -184,26 +208,44 @@ function RideDetails() {
                 {ride.destination}
               </h1>
               <p className="text-gray-600">Created by {ride.creator_name}</p>
+              {ride.status === "completed" && ride.completed_by_name && (
+                <p className="text-sm text-gray-500 mt-1">
+                  Completed by {ride.completed_by_name}
+                </p>
+              )}
             </div>
 
-            {isParticipant && (
-              <button
-                onClick={handleLeaveRide}
-                className="flex items-center px-4 py-2 text-red-600 border border-red-600 rounded-lg hover:bg-red-50 transition-colors"
-              >
-                <UserX className="h-4 w-4 mr-2" />
-                Leave Ride
-              </button>
-            )}
+            <div className="flex gap-2">
+              {/* Complete Ride Button - only show for active rides where user is creator or participant */}
+              {ride.status === "active" && isParticipant && (
+                <button
+                  onClick={handleCompleteRide}
+                  className="flex items-center px-4 py-2 text-green-600 border border-green-600 rounded-lg hover:bg-green-50 transition-colors"
+                >
+                  <Star className="h-4 w-4 mr-2" />
+                  Mark Complete
+                </button>
+              )}
 
-            {canJoin && (
-              <button
-                onClick={handleJoinRide}
-                className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
-              >
-                Join Ride
-              </button>
-            )}
+              {isParticipant && ride.status === "active" && (
+                <button
+                  onClick={handleLeaveRide}
+                  className="flex items-center px-4 py-2 text-red-600 border border-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                >
+                  <UserX className="h-4 w-4 mr-2" />
+                  Leave Ride
+                </button>
+              )}
+
+              {canJoin && ride.status === "active" && (
+                <button
+                  onClick={handleJoinRide}
+                  className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                >
+                  Join Ride
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">

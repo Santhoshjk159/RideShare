@@ -1,7 +1,20 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { motion } from "framer-motion";
-import { User, Mail, Calendar, Car, LogOut, Star, Award, MapPin, Clock, Shield, Edit, Camera } from "lucide-react";
+import {
+  User,
+  Mail,
+  Calendar,
+  Car,
+  LogOut,
+  Star,
+  Award,
+  MapPin,
+  Clock,
+  Shield,
+  Edit,
+  Camera,
+} from "lucide-react";
 import axios from "axios";
 import toast from "react-hot-toast";
 
