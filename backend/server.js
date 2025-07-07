@@ -137,6 +137,25 @@ app.get("/health", (req, res) => {
   });
 });
 
+// Health check route
+app.get("/", (req, res) => {
+  res.json({
+    message: "RideShare Backend API is running!",
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development"
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    message: "RideShare Backend API is running!",
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development"
+  });
+});
+
 // API Routes
 // Registering API routes...
 app.use("/api/auth", authRoutes);
