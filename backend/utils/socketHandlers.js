@@ -90,7 +90,7 @@ export const handleSocketConnection = (socket, io) => {
 
       // Save message to database
       const [result] = await db.execute(
-        "INSERT INTO ride_messages (ride_id, user_id, message) VALUES (?, ?, ?)",
+        "INSERT INTO messages (ride_id, user_id, message, created_at) VALUES (?, ?, ?, NOW())",
         [rideId, socket.userId, message]
       );
 

@@ -298,8 +298,8 @@ router.post("/", authenticateToken, async (req, res) => {
       INSERT INTO rides (
         creator_id, destination, pickup_location, 
         time_window_start, time_window_end, date, 
-        max_seats, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        max_seats, notes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `,
       [
         req.userId,
@@ -415,7 +415,7 @@ router.post("/:id/join", authenticateToken, async (req, res) => {
 
     // Add the joining user to ride
     await db.execute(
-      "INSERT INTO ride_participants (ride_id, user_id) VALUES (?, ?)",
+      "INSERT INTO ride_participants (ride_id, user_id, joined_at) VALUES (?, ?, NOW())",
       [rideId, userId]
     );
 
@@ -424,7 +424,7 @@ router.post("/:id/join", authenticateToken, async (req, res) => {
     // If this is the first join, also add the creator as a participant
     if (isFirstJoin) {
       await db.execute(
-        "INSERT INTO ride_participants (ride_id, user_id) VALUES (?, ?)",
+        "INSERT INTO ride_participants (ride_id, user_id, joined_at) VALUES (?, ?, NOW())",
         [rideId, ride.creator_id]
       );
       newCount = currentParticipants + 2; // Both user and creator added
